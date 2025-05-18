@@ -1,42 +1,45 @@
 import os
 import logging
 from langchain_community.document_loaders import TextLoader
-from langchain.text_splitter import TokenTextSplitter
 from langchain_community.vectorstores import Weaviate
-#from langchain_community.embeddings import HuggingFaceEmbeddings
-from langchain_huggingface import HuggingFaceEmbeddings
-import tiktoken
+from langchain_community.embeddings import HuggingFaceEmbeddings
 from tqdm import tqdm
 import weaviate
 from weaviate.embedded import EmbeddedOptions
+from transformers import AutoTokenizer
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Function to load text file and split into chunks using TikToken
+# Initialize BERT tokenizer
+tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")
+
 def process_text_file(file_path):
     try:
         logger.info(f"Processing text file: {file_path}")
         loader = TextLoader(file_path, encoding='utf-8')
         document = loader.load()
 
-        # Initialize TikToken-based splitter
-        tokenizer = tiktoken.get_encoding("cl100k_base")  # GPT-4 tokenizer
-        text_splitter = TokenTextSplitter(
-            chunk_size=500,  # Number of tokens per chunk
-            chunk_overlap=50,  # Number of overlapping tokens
-            encoding_name="cl100k_base"  # Specify the tokenizer
-        )
+        max_len = 500  # Reduced from 700 to stay within BERT's limit
+        chunks = []
 
-        chunks = text_splitter.split_documents(document)
+        for doc in document:
+            tokens = tokenizer.encode(doc.page_content, add_special_tokens=False)
+            
+            # Split tokens into chunks of max_len
+            for i in range(0, len(tokens), max_len):
+                chunk_tokens = tokens[i:i + max_len]
+                chunk_text = tokenizer.decode(chunk_tokens)
+                chunks.append(chunk_text.strip())
+
         logger.info(f"Extracted {len(chunks)} chunks from {file_path}")
         return chunks
     except Exception as e:
         logger.error(f"Error processing text file {file_path}: {str(e)}")
         return []
 
-def create_or_get_vector_store(chunks=None):
+def create_or_get_vector_store(chunks=None, sources=None):
     client = weaviate.Client(
         embedded_options=EmbeddedOptions(
             persistence_data_path="./weaviate_data"
@@ -69,18 +72,20 @@ def create_or_get_vector_store(chunks=None):
 
     vector_store = Weaviate(client, "Document", "text", embedding=embeddings, by_text=False)
 
-    if chunks:
+    if chunks and sources:
         # Process chunks in batches
         batch_size = 500  # You can adjust this value
         for i in tqdm(range(0, len(chunks), batch_size), desc="Adding chunks to Weaviate"):
-            batch = chunks[i:i+batch_size]
-            vector_store.add_documents(documents=batch)
+            batch_chunks = chunks[i:i+batch_size]
+            batch_sources = sources[i:i+batch_size]
+            vector_store.add_texts(texts=batch_chunks, metadatas=[{"source": source} for source in batch_sources])
 
     return vector_store
 
 def main():
     text_directory = "content"
     all_chunks = []
+    all_sources = []
 
     # Check if directory exists
     if not os.path.isdir(text_directory):
@@ -93,6 +98,7 @@ def main():
             file_path = os.path.join(text_directory, filename)
             chunks = process_text_file(file_path)
             all_chunks.extend(chunks)
+            all_sources.extend([filename] * len(chunks))
 
     logger.info(f"Total chunks extracted: {len(all_chunks)}")
 
@@ -101,7 +107,7 @@ def main():
         return
 
     # Create or get vector store
-    vector_store = create_or_get_vector_store(all_chunks)
+    vector_store = create_or_get_vector_store(all_chunks, all_sources)
     if vector_store is None:
         return
 
