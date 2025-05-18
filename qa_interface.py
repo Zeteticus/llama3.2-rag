@@ -1,8 +1,8 @@
 import logging
 import textwrap
-from langchain_community.llms import Ollama
+from langchain_ollama import OllamaLLM
+from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_weaviate import WeaviateVectorStore
-from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain.chains import ConversationalRetrievalChain
 from langchain.memory import ConversationBufferMemory
 import weaviate
@@ -33,7 +33,7 @@ def setup_rag(vector_store):
         logger.error("Vector store is None. Cannot set up RAG.")
         return None
     
-    llm = Ollama(model="llama3.2")
+    llm = OllamaLLM(model="llama3.2")
     memory = ConversationBufferMemory(
         memory_key="chat_history",
         return_messages=True
